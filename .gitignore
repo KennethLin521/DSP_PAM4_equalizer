@@ -1,0 +1,8 @@
+# Verilator built artifacts
+obj_dir/
+*.o
+*.d
+
+# Simulation logs and local dumps
+*.log
+%.vcd

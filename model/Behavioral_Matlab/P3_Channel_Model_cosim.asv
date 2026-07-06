@@ -1,0 +1,232 @@
+%{
+Kenneth Lin
+Noisy channel w/ FFE/DFE for cosim (vs RTL)
+%}
+
+clear; clc; close all; 
+
+% config 
+num_symbols = 5000; 
+baud_rate = 28e9;
+samples_per_sym = 1; 
+
+%% STEP 1: Generate random PAM4 symbols 
+% Generate integers uniformly distributed in the range [0, 3]
+rng(42);
+raw_symbols = randi([0, 3], num_symbols, 1);
+
+%% STEP 2: PAM4 symbol mapping
+% mapping: 0 -> -3,  1 -> -1,  2 -> +1,  3 -> +3 
+mapped_signals = zeros(num_symbols, 1);
+tx_waveform = 2 * raw_symbols - 3;
+
+%% STEP 3: Defining and applying noise
+h_ideal = [1.0]; %ideal channel 
+h_lossy = [0.8, 0.3, 0.1]; % lossy channel w/ ISI
+
+rx_waveform_lossy = filter(h_lossy, 1, tx_waveform);
+
+%{
+noise_amplitude = 0.1; 
+thermal_noise = noise_amplitude * randn(size(rx_waveform_lossy));
+rx_waveform_noisy = rx_waveform_lossy + thermal_noise;
+%}
+% thermal_noise(# samples, impedance, sample rate, temp (K)
+noise = thermal_noise(length(rx_waveform_lossy), 50, 28e9, 300); 
+rx_waveform_noisy = rx_waveform_lossy + noise;
+
+%% STEP 4: Calculating PAM4 slicer and error test
+
+test_samples = rx_waveform_noisy(1:100);
+
+guessed_levels = zeros(size(test_samples));
+
+%logical indexing
+guessed_levels(test_samples >= 2) = 3;
+guessed_levels(test_samples >= 0 & test_samples < 2) = 1;
+guessed_levels(test_samples >= -2 & test_samples < 0) = -1;
+guessed_levels(test_samples < -2) = -3;
+
+error_vals = test_samples - guessed_levels; 
+
+mean_abs_error = mean(abs(error_vals));
+mean_squared_error = mean(error_vals .^ 2);
+
+fprintf('--- Vectorized Slicer Test ---\n');
+fprintf('Mean Absolute Error (MAE) : %.3f LSBs\n', mean_abs_error);
+fprintf('Mean Squared Error (MSE)  : %.3f\n', mean_squared_error);
+
+%% STEP 4.5 Binary adaptation 
+adc_bits = 8;
+adc_max = 2^(adc_bits-1) - 1;
+adc_min = -2^(adc_bits-1);
+adc_fsr = 4.0; % ADC Full-Scale Range is +/- 4.0 Volts
+%volts_to_lsb = adc_max / adc_fsr; % conversion, approx 31 LSBs/volt
+volts_to_lsb = 31; % for co-sim
+lsb_to_volt = 1 / volts_to_lsb; % for plotting
+
+%% STEP 5: Adaptive equalizer (FFE + DFE) 
+%num_ffe_taps = 15; % 15-tap FFE
+%ffe_weights = [1.0; 0.0; 0.0; 0.0; 0.0; 0.0; 0.0; 0.0; 0.0; 0.0; 0.0; 0.0; 0.0; 0.0; 0.0]; % effectively a standard impulse --> does nothing
+num_ffe_taps = 3; % 3-tap FFE
+ffe_weights = [1.0; 0.0; 0.0];
+
+dfe_weight = 0.0;
+
+mu = 0.005; % Sign-Sign Least mean squares (LMS) step size (learning rate)
+
+% preallocate arrays 
+equalized_waveform = zeros(num_symbols, 1);
+error_history = zeros(num_symbols, 1);
+
+% shift registers, mimicking DFF in Verilog 
+rx_shift_reg = zeros(num_ffe_taps, 1); 
+prev_decision = 0;
+
+% Training adaptive equalizer 
+for i = 1:num_symbols
+    digital_rx = round(rx_waveform_noisy(i) * volts_to_lsb);
+    % ADC saturation 
+    if digital_rx > adc_max
+        digital_rx = adc_max;
+    elseif digital_rx < adc_min
+        digital_rx = adc_min;
+    end
+
+    rx_shift_reg = [digital_rx; rx_shift_reg(1:end-1)];
+    ffe_out = ffe_weights' * rx_shift_reg; 
+    dfe_out = (dfe_weight * prev_decision); 
+
+    % equalized signal 
+    eq_signal = ffe_out - dfe_out; 
+    equalized_waveform(i) = eq_signal;
+
+    % slicer, now on digital integer codes
+    if eq_signal >= round(2.0 * volts_to_lsb)
+        decision = round(3.0 * volts_to_lsb);
+    elseif eq_signal >= 0 && eq_signal < round(2.0 * volts_to_lsb)
+        decision = round(1.0 * volts_to_lsb);
+    elseif eq_signal >= round(-2.0 * volts_to_lsb) && eq_signal < 0
+        decision = round(-1.0 * volts_to_lsb);
+    else
+        decision = round(-3.0 * volts_to_lsb);
+    end
+    
+    % Calculate Error (Actual - Ideal)
+    error_val = eq_signal - decision;
+    error_history(i) = error_val;
+
+    % Sign-Sign LMS adaptation 
+    ffe_weights = ffe_weights - mu * (sign(error_val) * sign(rx_shift_reg));
+    dfe_weight = dfe_weight + mu * (sign(error_val) * sign(prev_decision));
+    prev_decision = decision; 
+end 
+equalized_waveform = equalized_waveform * lsb_to_volt; % scale back for plotting
+
+figure;
+plot(abs(error_history), 'LineWidth', 1.5);
+grid on;
+title('Sign-Sign LMS Equalizer Learning Curve (Error vs. Time)');
+xlabel('Clock Cycles (Symbols)');
+ylabel('Absolute Error (Volts)');
+
+%% STEP 6: eye diagrams 
+%{
+upsample_factor = 8;
+samples_per_trace = upsample_factor * 2;
+tx_smooth = interp(tx_waveform, upsample_factor);
+rx_smooth = interp(rx_waveform_noisy, upsample_factor);
+
+% Discard the first 300 samples to let the filter settle
+settled_tx = tx_waveform(301:end); 
+settled_rx = rx_waveform_noisy(301:end); 
+settled_eq = equalized_waveform(301:end);
+
+upsample_factor = 8;
+samples_per_trace = upsample_factor * 2; % 2 Unit Intervals wide
+
+% Interpolate to create smooth oscilloscope traces
+tx_smooth = interp(settled_tx, upsample_factor);
+rx_smooth = interp(settled_rx, upsample_factor);
+eq_smooth = interp(settled_eq, upsample_factor);
+
+% Strip away the interpolation filter group delay
+interp_delay_offset = 29; 
+tx_smooth = tx_smooth(interp_delay_offset:end);
+rx_smooth = rx_smooth(interp_delay_offset:end);
+eq_smooth = eq_smooth(interp_delay_offset:end);
+
+% Calculate how many full 2-UI traces we can draw
+num_traces = floor(length(eq_smooth) / samples_per_trace) - 1;
+t_vector = (0:samples_per_trace-1) / upsample_factor;
+
+% Reshape the long 1D arrays into 2D matrices for overlapping plots
+tx_eye_matrix = reshape(tx_smooth(1:num_traces*samples_per_trace), samples_per_trace, num_traces);
+rx_eye_matrix = reshape(rx_smooth(1:num_traces*samples_per_trace), samples_per_trace, num_traces);
+eq_eye_matrix = reshape(eq_smooth(1:num_traces*samples_per_trace), samples_per_trace, num_traces);
+
+% eye diagrams
+
+% Ideal TX Eye
+figure('Name', 'TX Eye', 'Position', [100, 100, 500, 400]);
+plot(t_vector, tx_eye_matrix(:, 1:min(200, num_traces)), 'g', 'LineWidth', 0.5);
+grid on; 
+title('Ideal TX PAM4 Eye'); 
+xlabel('Symbol Time (UI)'); ylabel('Voltage (V)');
+ylim([-5 5]);
+
+% Rx eye before equalization
+figure('Name', 'RX Before EQ', 'Position', [650, 100, 500, 400]);
+plot(t_vector, rx_eye_matrix(:, 1:min(200, num_traces)), 'r', 'LineWidth', 0.5);
+grid on; 
+title('Rx Input Before Equalization'); 
+xlabel('Symbol Time (UI)'); ylabel('Voltage (V)');
+ylim([-5 5]);
+
+% Equalized eye after FFE/DFE
+figure('Name', 'RX After EQ', 'Position', [1200, 100, 500, 400]);
+plot(t_vector, eq_eye_matrix(:, 1:min(200, num_traces)), 'b', 'LineWidth', 0.5);
+grid on;
+title('After SS-LMS Equalization (FFE + DFE)');
+xlabel('Symbol Time (UI)'); ylabel('Voltage (V)');
+ylim([-5 5]);
+%}
+
+%% STEP 7: Export Bit-True Hex Stimulus for Verilog Testbench
+% force exact factors as rtl
+bt_volts_to_lsb = 31;
+bt_adc_max = 127;
+bt_adc_min = -128; 
+
+filename_hex = 'rx_stimulus.hex';
+fid = fopen(filename_hex, 'w');
+
+if fid == -1
+    error('Failed to create rx_stimulus.hex file.');
+end
+
+fprintf("Loading values");
+for i = 1:num_symbols
+    % convert floating point channel waveforms into interger LSBs 
+    scaled_sample = round(rx_waveform_noisy(i) * bt_volts_to_lsb);
+    
+    % apply ADC clipping
+    if scaled_sample > bt_adc_max
+        scaled_sample = bt_adc_max;
+    elseif scaled_sample < bt_adc_min
+        scaled_sample = bt_adc_min;
+    end
+
+    % convert signed 8-bits to 2's complement raw integer value
+    if scaled_sample < 0
+        raw_hex_val = scaled_sample + 256;
+    else
+        raw_hex_val = scaled_sample;
+    end
+
+    % print as clean 2-bit hex value w/ trailing newline 
+    fprintf(fid, '%02X\n', raw_hex_val);
+end 
+
+fclose(fid);
+fprintf("Done")
