@@ -2,7 +2,7 @@
 
 module tb_equalizer;
     parameter NUM_SAMPLES = 5000; // Matching your MATLAB config
-    parameter CLK_PERIOD  = 10;   // 10ns cycle time
+    parameter CLK_PERIOD  = 10;
 
     // inputs to DUT
     reg clk;
@@ -10,7 +10,7 @@ module tb_equalizer;
     reg enable_adapt;
     reg signed [7:0] rx_data;
 
-    // outputs from DUT 
+    // outputs from DUT
     wire signed [15:0] eq_output;
 
     // testbench internal memory for MATLAB stimuli
@@ -18,7 +18,7 @@ module tb_equalizer;
     integer out_file;
     integer i;
 
-    // instantiate top-level module 
+    // instantiate top-level module
     equalizer_top u_dut (
         .clk(clk),
         .rst_n(rst_n),
@@ -39,7 +39,7 @@ module tb_equalizer;
         $dumpvars(0, tb_equalizer);     // Dumps ALL signals in the testbench and DUT
     end
 
-    // main co-simulation flow 
+    // main co-simulation flow
     initial begin
         // 1. read MATLAB .hex dump
         $readmemh("rx_stimulus.hex", rx_mem);
@@ -47,9 +47,9 @@ module tb_equalizer;
         // 2. open output file to dump output
         out_file = $fopen("eq_output_dump.hex", "w");
 
-        // 3. initial reset state 
+        // 3. initial reset state
         rst_n = 0;
-        enable_adapt = 0; // keep off to check static behavior 
+        enable_adapt = 0;
         rx_data = 8'sd0;
 
         #(CLK_PERIOD * 5);
@@ -58,21 +58,27 @@ module tb_equalizer;
 
         #(CLK_PERIOD * 5);
 
-        // 4. feed stimuli 
+        // MATLAB adapts from the very first symbol, so match it here
+        enable_adapt = 1;
+
+        // 4. feed stimuli
+        // Drive rx_data on the FALLING edge only, so it is stable long
+        // before the DUT samples it on the rising edge. Driving it at the
+        // same time step as the posedge (like a blocking assignment right
+        // after @(posedge clk)) races the DUT's always block: the delay
+        // line can capture the NEW sample, making tap0 and tap1 both see
+        // the same symbol.
         $display(" ----- starting RTL co-sim -----");
         for(i = 0; i < NUM_SAMPLES; i = i + 1) begin
+            @(negedge clk);
             rx_data = rx_mem[i];
 
-            @(posedge clk); // sample occurs on clk edge
-
-            // log output to file 
+            // Log mid-cycle, after combinational logic settles and BEFORE
+            // the next posedge shifts the delay line. At this moment the
+            // FFE sees [x(i), x(i-1), x(i-2)] - exactly the MATLAB
+            // shift-register contents at step i.
+            #1;
             $fdisplay(out_file, "%h", eq_output);
-
-            // turning adaptation on
-            if (i == 500) begin 
-                $display("Enabling adaptation loop at sample %d", i);
-                enable_adapt = 1;
-            end 
         end
 
         // 5. wrap up
@@ -81,5 +87,5 @@ module tb_equalizer;
         $display("----- co-sim complete -----");
         $finish;
     end
-    
+
 endmodule
