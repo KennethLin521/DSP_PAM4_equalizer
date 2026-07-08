@@ -1,0 +1,44 @@
+# ============================================================
+#  Yosys synthesis: 3-tap FFE + 1-tap DFE PAM4 equalizer
+#  Target library: SkyWater sky130 high-density standard cells
+#
+#  RUN FROM THE REPO ROOT:
+#      cd ~/DSP_proj_personal        (your repo root on WSL)
+#      yosys src/synth/synth.ys
+# ============================================================
+
+# ---- 1. Read the RTL (design under test only, NOT the testbench) ----
+#     The *_tb.v files use $display/$readmemh which are simulation-only
+#     and not synthesizable, so we never feed them to synthesis.
+read_verilog src/Equalizer/ffe_tap.v
+read_verilog src/Equalizer/dfe_tap.v
+read_verilog src/Equalizer/pam4_slicer.v
+read_verilog src/Equalizer/equalizer_top.v
+
+# ---- 2. Elaborate the hierarchy and pick the top module ----
+#     -check errors out early if any submodule is missing/unresolved.
+hierarchy -check -top equalizer_top
+
+# ---- 3. Coarse ("generic") synthesis: RTL -> abstract gates ----
+#     Turns +, *, if/else, and always-blocks into technology-independent
+#     logic and generic flip-flops. Your multipliers become adder trees here.
+synth -top equalizer_top
+
+# ---- 4. Map the flip-flops to real sky130 DFF cells ----
+dfflibmap -liberty pdk/sky130_fd_sc_hd__tt_025C_1v80.lib
+
+# ---- 5. Map the combinational logic to sky130 cells (ABC engine) ----
+#     ABC picks concrete gates (NAND/NOR/AOI/...) from the library to
+#     implement the boolean logic left after step 3.
+abc -liberty pdk/sky130_fd_sc_hd__tt_025C_1v80.lib
+
+# ---- 6. Remove unused nets and cells left over from mapping ----
+opt_clean -purge
+
+# ---- 7. Reports: cell count, area, per-celltype breakdown ----
+#     'tee -o' also saves the report to a file you can read later.
+tee -o src/synth/synth_stat.txt stat -liberty pdk/sky130_fd_sc_hd__tt_025C_1v80.lib
+check
+
+# ---- 8. Write the gate-level netlist (this is what PnR will place) ----
+write_verilog -noattr src/synth/equalizer_top_synth.v
