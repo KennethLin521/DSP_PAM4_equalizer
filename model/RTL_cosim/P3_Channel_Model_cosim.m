@@ -114,7 +114,7 @@ ffe_weights = [1.0; 0.0; 0.0];
 
 dfe_weight = 0.0;
 
-mu = 0.005; % Sign-Sign Least mean squares (LMS) step size (learning rate)
+mu = 1/256; % SS-LMS step size, matched to RTL: +/-1 LSB of a Q8.8 accumulator = 1/256
 
 % preallocate arrays 
 equalized_waveform = zeros(num_symbols, 1);
