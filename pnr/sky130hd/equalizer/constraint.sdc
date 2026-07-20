@@ -1,0 +1,16 @@
+# Timing constraints for equalizer_top on sky130hd.
+# The RTL sim used a "10 unit" clock; sky130 liberty is in ns, so 10.0 ns
+# = 100 MHz. Deliberately relaxed so timing closes on the first pass;
+# tighten later once the flow is understood.
+
+set clk_name   clk
+set clk_period 10.0
+
+create_clock -name $clk_name -period $clk_period [get_ports $clk_name]
+
+# A little pessimism so the clock tree is built with margin.
+set_clock_uncertainty 0.10 [get_clocks $clk_name]
+
+# Model board/pad delays on the data pins (everything except the clock).
+set_input_delay  2.0 -clock $clk_name [remove_from_collection [all_inputs] [get_ports $clk_name]]
+set_output_delay 2.0 -clock $clk_name [all_outputs]
