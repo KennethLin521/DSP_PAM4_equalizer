@@ -4,7 +4,11 @@
 # tighten later once the flow is understood.
 
 set clk_name   clk
-set clk_period 10.0
+# 20 ns / 50 MHz: the single-cycle LMS loop (multiply -> adder tree ->
+# slicer -> error -> coefficient update) measures ~16.6 ns in sky130hd,
+# so 10 ns was structurally impossible without pipelining the loop
+# (delayed-LMS). Relaxed for clean closure; pipelining is a future task.
+set clk_period 20.0
 
 create_clock -name $clk_name -period $clk_period [get_ports $clk_name]
 
