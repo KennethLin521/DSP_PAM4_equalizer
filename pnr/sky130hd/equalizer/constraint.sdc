@@ -12,5 +12,9 @@ create_clock -name $clk_name -period $clk_period [get_ports $clk_name]
 set_clock_uncertainty 0.10 [get_clocks $clk_name]
 
 # Model board/pad delays on the data pins (everything except the clock).
-set_input_delay  2.0 -clock $clk_name [remove_from_collection [all_inputs] [get_ports $clk_name]]
+# NOTE: OpenSTA (OpenROAD's timing engine) does NOT implement the Synopsys
+# command remove_from_collection. Use the Tcl lsearch idiom that ORFS's own
+# example SDCs use to drop the clock port from the input list.
+set clk_port [get_ports $clk_name]
+set_input_delay  2.0 -clock $clk_name [lsearch -inline -all -not -exact [all_inputs] $clk_port]
 set_output_delay 2.0 -clock $clk_name [all_outputs]
