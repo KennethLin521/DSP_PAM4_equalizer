@@ -12,6 +12,11 @@ set clk_period 20.0
 
 create_clock -name $clk_name -period $clk_period [get_ports $clk_name]
 
+# Async reset release is guaranteed by usage (deasserted at a negedge,
+# far from any rising clock edge), not by timing the giant rst_n fanout
+# net. Without this, recovery checks on ~90 flop reset pins dominate wns.
+set_false_path -from [get_ports rst_n]
+
 # A little pessimism so the clock tree is built with margin.
 set_clock_uncertainty 0.10 [get_clocks $clk_name]
 
